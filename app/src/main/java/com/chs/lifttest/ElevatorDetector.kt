@@ -14,7 +14,8 @@ import kotlin.math.sqrt
 
 class ElevatorDetector(
     context: Context,
-    private val onEvent: (ElevatorEvent) -> Unit
+    private val onEvent: (ElevatorEvent) -> Unit,
+    private val onSensingChanged: (Boolean) -> Unit = {}
 ) : SensorEventListener {
 
     // ---- 튜닝 상수 ----
@@ -84,11 +85,13 @@ class ElevatorDetector(
     fun stop() {
         handler.removeCallbacksAndMessages(null)
         sm.unregisterListener(this)
+        val wasSensing = sensing
         sensing = false
         state = ElevatorState.IDLE
         resetBuffers()
         if (sensingLock.isHeld) sensingLock.release()
         if (stepLock.isHeld) stepLock.release()
+        if (wasSensing) onSensingChanged(false)
     }
 
     // ---------------- 센서 게이팅 ----------------
@@ -102,6 +105,7 @@ class ElevatorDetector(
         linAcc?.let { sm.registerListener(this, it, us / 2) }
         baro?.let { sm.registerListener(this, it, us) }
         armSensingWindow()
+        onSensingChanged(true)
     }
 
     private fun stopSensing() {
@@ -113,6 +117,7 @@ class ElevatorDetector(
         baro?.let { sm.unregisterListener(this, it) }
         if (sensingLock.isHeld) sensingLock.release()
         resetBuffers()
+        onSensingChanged(false)
     }
 
     /** 감지 구간 타이머를 (재)시작한다. 걸음 센서가 없으면 타이머 없이 상시 유지. */
@@ -236,4 +241,3 @@ class ElevatorDetector(
         return if (d == 0.0) 0f else ((n * sxy - sx * sy) / d).toFloat()
     }
 }
-

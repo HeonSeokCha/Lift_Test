@@ -20,7 +20,7 @@ import kotlin.jvm.java
 class ElevatorDetectService : Service() {
 
     companion object {
-        const val ACTION_STOP = "com.chs.lifttest.STOP"
+        const val ACTION_STOP = "com.example.elevator.STOP"
         private const val CHANNEL_ID = "elevator_detect"
         private const val NOTI_ID = 1
 
@@ -32,6 +32,9 @@ class ElevatorDetectService : Service() {
 
         private val _error = MutableStateFlow<String?>(null)
         val error: StateFlow<String?> = _error
+
+        private val _sensing = MutableStateFlow(false)
+        val sensing: StateFlow<Boolean> = _sensing
     }
 
     private var detector: ElevatorDetector? = null
@@ -63,15 +66,19 @@ class ElevatorDetectService : Service() {
             return START_NOT_STICKY
         }
 
-        val d = ElevatorDetector(this) { event ->
-            _events.value = event
-            val text = when {
-                event.state == ElevatorState.RIDING && event.direction > 0 -> "엘리베이터 탑승 중 (상승)"
-                event.state == ElevatorState.RIDING -> "엘리베이터 탑승 중 (하강)"
-                else -> "엘리베이터 감지 대기 중"
-            }
-            getSystemService(NotificationManager::class.java).notify(NOTI_ID, buildNotification(text))
-        }
+        val d = ElevatorDetector(
+            context = this,
+            onEvent = { event ->
+                _events.value = event
+                val text = when {
+                    event.state == ElevatorState.RIDING && event.direction > 0 -> "엘리베이터 탑승 중 (상승)"
+                    event.state == ElevatorState.RIDING -> "엘리베이터 탑승 중 (하강)"
+                    else -> "엘리베이터 감지 대기 중"
+                }
+                getSystemService(NotificationManager::class.java).notify(NOTI_ID, buildNotification(text))
+            },
+            onSensingChanged = { _sensing.value = it }
+        )
 
         if (!d.isSupported) {
             _error.value = "이 기기는 기압계 또는 필요한 센서가 없어 지원되지 않습니다."
@@ -90,6 +97,7 @@ class ElevatorDetectService : Service() {
         detector?.stop()
         detector = null
         _running.value = false
+        _sensing.value = false
         super.onDestroy()
     }
 
