@@ -10,9 +10,12 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class ElevatorState { IDLE, RIDING }
 
 object ElevatorEvents {
+    internal val _direction = MutableStateFlow<ElevatorDetector.Direction?>(null)
+    val direction: StateFlow<ElevatorDetector.Direction?> = _direction.asStateFlow()
+
     internal val _phase = MutableStateFlow(ElevatorDetector.Phase.GATED_WALKING)
     val phase: StateFlow<ElevatorDetector.Phase> = _phase.asStateFlow()
 
-    internal val _rides = MutableSharedFlow<ElevatorDetector.ElevatorRide>(extraBufferCapacity = 16)
-    val rides: SharedFlow<ElevatorDetector.ElevatorRide> = _rides.asSharedFlow()
+    internal val _rides = MutableStateFlow<ElevatorDetector.ElevatorRide?>(null)
+    val rides: StateFlow<ElevatorDetector.ElevatorRide?> = _rides.asStateFlow()
 }

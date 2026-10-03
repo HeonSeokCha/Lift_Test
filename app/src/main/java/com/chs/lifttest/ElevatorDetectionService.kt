@@ -22,6 +22,8 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 class ElevatorDetectionService : Service(), SensorEventListener {
 
@@ -30,17 +32,37 @@ class ElevatorDetectionService : Service(), SensorEventListener {
     private lateinit var sensorHandler: Handler
     private var wakeLock: PowerManager.WakeLock? = null
 
+    companion object {
+        private const val CHANNEL_ID = "elevator_detection"
+        private const val NOTIFICATION_ID = 1001
+        private const val DEFAULT_TEXT = "감지 대기 중"
+        private const val ACCEL_PERIOD_US = 20_000   // 50 Hz (200Hz 초과 시 HIGH_SAMPLING_RATE_SENSORS 필요)
+        private const val PRESSURE_PERIOD_US = 40_000 // 25 Hz 요청, 기기에 따라 실제 1~25Hz
+        val events = ElevatorEvents
+
+
+        private val _running = MutableStateFlow(false)
+        val running: StateFlow<Boolean> = _running
+
+        fun start(context: Context) =
+            ContextCompat.startForegroundService(context, Intent(context, ElevatorDetectionService::class.java))
+
+        fun stop(context: Context) =
+            context.stopService(Intent(context, ElevatorDetectionService::class.java))
+    }
+
     private val detector = ElevatorDetector(DetectorConfig(), object : ElevatorDetector.Listener {
         override fun onPhaseChanged(phase: ElevatorDetector.Phase) {
-            ElevatorEvents._phase.value = phase
+            events._phase.value = phase
         }
 
         override fun onRideStarted(direction: ElevatorDetector.Direction, timestampNs: Long) {
+            events._direction.value = direction
             updateNotification("엘리베이터 탑승 중 (${if (direction == ElevatorDetector.Direction.UP) "↑" else "↓"})")
         }
 
         override fun onRideFinished(ride: ElevatorDetector.ElevatorRide) {
-            ElevatorEvents._rides.tryEmit(ride)
+            events._rides.tryEmit(ride)
             updateNotification(
                 "하차: ${ride.direction} ${"%.1f".format(ride.altitudeChangeM)}m (~${ride.estimatedFloors}층)"
             )
@@ -74,7 +96,10 @@ class ElevatorDetectionService : Service(), SensorEventListener {
         registerSensors()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        _running.value = true
+        return START_STICKY
+    }
 
     private fun registerSensors() {
         // 콜백은 모두 sensorHandler(단일 스레드)에서 → detector는 동기화 불필요
@@ -122,6 +147,7 @@ class ElevatorDetectionService : Service(), SensorEventListener {
         if (::sensorManager.isInitialized) sensorManager.unregisterListener(this)
         if (::sensorThread.isInitialized) sensorThread.quitSafely()
         wakeLock?.takeIf { it.isHeld }?.release()
+        _running.value = false
         super.onDestroy()
     }
 
@@ -129,12 +155,10 @@ class ElevatorDetectionService : Service(), SensorEventListener {
 
     // --- Notification ---
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "엘리베이터 감지", NotificationManager.IMPORTANCE_LOW)
-            )
-        }
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "엘리베이터 감지", NotificationManager.IMPORTANCE_LOW)
+        )
     }
 
     private fun buildNotification(text: String): Notification =
@@ -148,19 +172,5 @@ class ElevatorDetectionService : Service(), SensorEventListener {
 
     private fun updateNotification(text: String) {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
-    }
-
-    companion object {
-        private const val CHANNEL_ID = "elevator_detection"
-        private const val NOTIFICATION_ID = 1001
-        private const val DEFAULT_TEXT = "감지 대기 중"
-        private const val ACCEL_PERIOD_US = 20_000   // 50 Hz (200Hz 초과 시 HIGH_SAMPLING_RATE_SENSORS 필요)
-        private const val PRESSURE_PERIOD_US = 40_000 // 25 Hz 요청, 기기에 따라 실제 1~25Hz
-
-        fun start(context: Context) =
-            ContextCompat.startForegroundService(context, Intent(context, ElevatorDetectionService::class.java))
-
-        fun stop(context: Context) =
-            context.stopService(Intent(context, ElevatorDetectionService::class.java))
     }
 }

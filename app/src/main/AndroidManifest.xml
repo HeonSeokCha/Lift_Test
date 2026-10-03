@@ -30,7 +30,7 @@
         </activity>
 
         <service
-            android:name=".ui.ElevatorDetectService"
+            android:name=".ElevatorDetectionService"
             android:exported="false"
             android:foregroundServiceType="health" />
     </application>

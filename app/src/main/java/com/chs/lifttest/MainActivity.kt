@@ -1,7 +1,5 @@
 package com.chs.lifttest
 
-import android.content.Context
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,16 +21,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,11 +32,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.chs.lifttest.ui.ElevatorDetectService
-import kotlin.jvm.java
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,14 +58,10 @@ private fun ElevatorScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-
-    // 서비스가 노출하는 상태를 수명주기에 맞춰 구독
-    val running by ElevatorDetectService.running.collectAsStateWithLifecycle()
-    val event by ElevatorDetectService.events.collectAsStateWithLifecycle()
-    val serviceError by ElevatorDetectService.error.collectAsStateWithLifecycle()
-    // true = 걸음이 멈춰 기압/가속 센서로 탑승 여부를 확인 중 (절전 게이팅 상태)
-    val sensing by ElevatorDetectService.sensing.collectAsStateWithLifecycle()
-
+    val direction by ElevatorDetectionService.events.direction.collectAsStateWithLifecycle()
+    val phase by ElevatorDetectionService.events.phase.collectAsStateWithLifecycle()
+    val rides by ElevatorDetectionService.events.rides.collectAsStateWithLifecycle()
+    val running by ElevatorDetectionService.running.collectAsStateWithLifecycle()
     var permissionDenied by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -85,35 +70,31 @@ private fun ElevatorScreen(
         // 알림 권한은 거부돼도 서비스는 동작하므로 활동 인식 권한만 필수로 본다.
         if (PermissionUtil.hasActivityRecognition(context)) {
             permissionDenied = false
-            startDetection(context)
+            ElevatorDetectionService.start(context)
         } else {
             permissionDenied = true
         }
     }
 
-    val riding = running && event?.state == ElevatorState.RIDING
-    val e = event
+
 
     val title = when {
-        serviceError != null -> "시작할 수 없습니다"
         !running -> "감지가 꺼져 있습니다"
-        riding -> "엘리베이터 탑승 중"
-        sensing -> "탑승 여부 확인 중"
+         rides != null -> "엘리베이터 탑승 중"
         else -> "걸음 감지 대기 중"
     }
     val detail = when {
-        serviceError != null -> serviceError
-        riding && e != null ->
-            "${if (e.direction > 0) "▲ 상승" else "▼ 하강"} · %.1f m/s".format(kotlin.math.abs(e.verticalSpeed))
-        sensing -> "걸음이 멈춰 기압/가속 센서로 확인하고 있어요"
+        direction != null ->
+            if (direction == ElevatorDetector.Direction.UP) "▲ 상승" else "▼ 하강"
+        phase == ElevatorDetector.Phase.MONITORING -> "걸음이 멈춰 기압/가속 센서로 확인하고 있어요"
         running -> "걸음 센서만 저전력으로 대기 중이에요"
         else -> "시작 버튼을 눌러 감지를 켜세요"
     }
 
     val cardColor by animateColorAsState(
         targetValue = when {
-            riding -> MaterialTheme.colorScheme.primaryContainer
-            sensing -> MaterialTheme.colorScheme.tertiaryContainer
+            rides != null -> MaterialTheme.colorScheme.primaryContainer
+            phase == ElevatorDetector.Phase.MONITORING -> MaterialTheme.colorScheme.tertiaryContainer
             else -> MaterialTheme.colorScheme.surfaceVariant
         },
         label = "cardColor"
@@ -154,10 +135,10 @@ private fun ElevatorScreen(
             Button(
                 onClick = {
                     if (running) {
-                        context.stopService(Intent(context, ElevatorDetectService::class.java))
+                        ElevatorDetectionService.stop(context)
                     } else {
                         val needed = PermissionUtil.missingPermissions(context)
-                        if (needed.isEmpty()) startDetection(context)
+                        if (needed.isEmpty()) ElevatorDetectionService.start(context)
                         else permissionLauncher.launch(needed)
                     }
                 }
@@ -178,8 +159,4 @@ private fun ElevatorScreen(
             }
         }
     }
-}
-
-private fun startDetection(context: Context) {
-    ContextCompat.startForegroundService(context, Intent(context, ElevatorDetectService::class.java))
 }
