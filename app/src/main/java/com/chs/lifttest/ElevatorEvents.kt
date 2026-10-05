@@ -1,13 +1,8 @@
 package com.chs.lifttest
 
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-
-enum class ElevatorState { IDLE, RIDING }
 
 object ElevatorEvents {
     internal val _direction = MutableStateFlow<ElevatorDetector.Direction?>(null)

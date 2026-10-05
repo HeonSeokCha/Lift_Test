@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
@@ -15,6 +16,11 @@ object PermissionUtil {
 
     fun hasActivityRecognition(context: Context) =
         isGranted(context, Manifest.permission.ACTIVITY_RECOGNITION)
+
+    fun isBatteryOptimizationsIgnored(context: Context): Boolean {
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        return powerManager.isIgnoringBatteryOptimizations(context.packageName)
+    }
 
     fun missingPermissions(context: Context): Array<String> = buildList {
         if (!hasActivityRecognition(context)) add(Manifest.permission.ACTIVITY_RECOGNITION)

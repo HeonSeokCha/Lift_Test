@@ -1,6 +1,9 @@
 package com.chs.lifttest
 
+import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,12 +29,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -63,20 +68,45 @@ private fun ElevatorScreen(
     val rides by ElevatorDetectionService.events.rides.collectAsStateWithLifecycle()
     val running by ElevatorDetectionService.running.collectAsStateWithLifecycle()
     var permissionDenied by remember { mutableStateOf(false) }
+    var isIgnoring by remember { mutableStateOf(PermissionUtil.isBatteryOptimizationsIgnored(context)) }
+
+    LaunchedEffect(phase) {
+        Log.e("CHS_123", phase.toString())
+    }
+    LaunchedEffect(rides) {
+        Log.e("CHS_123", rides.toString())
+    }
+    LaunchedEffect(running) {
+        Log.e("CHS_123", running.toString())
+    }
+
+    val batteryIgnoreLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        isIgnoring = PermissionUtil.isBatteryOptimizationsIgnored(context)
+        permissionDenied = !isIgnoring
+    }
+
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        // 알림 권한은 거부돼도 서비스는 동작하므로 활동 인식 권한만 필수로 본다.
         if (PermissionUtil.hasActivityRecognition(context)) {
-            permissionDenied = false
-            ElevatorDetectionService.start(context)
+            if (isIgnoring) {
+                ElevatorDetectionService.start(context)
+                permissionDenied = false
+            } else {
+                batteryIgnoreLauncher.launch(
+                    Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        "package:${context.packageName}".toUri()
+                    )
+                )
+            }
         } else {
             permissionDenied = true
         }
     }
-
-
 
     val title = when {
         !running -> "감지가 꺼져 있습니다"
@@ -153,7 +183,11 @@ private fun ElevatorScreen(
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodyMedium
                 )
-                TextButton(onClick = { PermissionUtil.openAppSettings(context) }) {
+                TextButton(
+                    onClick = {
+                        PermissionUtil.openAppSettings(context)
+                    }
+                ) {
                     Text("설정에서 허용하기")
                 }
             }
