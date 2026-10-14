@@ -32,17 +32,18 @@ class ElevatorDetectionService : Service(), SensorEventListener {
     private lateinit var sensorHandler: Handler
     private var wakeLock: PowerManager.WakeLock? = null
 
+    /** onCreate에서 정상 초기화가 끝났는지 */
+    private var initialized = false
+
     companion object {
         private const val CHANNEL_ID = "elevator_detection"
         private const val NOTIFICATION_ID = 1001
         private const val DEFAULT_TEXT = "감지 대기 중"
-        private const val ACCEL_PERIOD_US = 20_000   // 50 Hz (200Hz 초과 시 HIGH_SAMPLING_RATE_SENSORS 필요)
+        private const val ACCEL_PERIOD_US = 20_000   // 50 Hz
         private const val PRESSURE_PERIOD_US = 40_000 // 25 Hz 요청, 기기에 따라 실제 1~25Hz
         val events = ElevatorEvents
 
-
-        private val _running = MutableStateFlow(false)
-        val running: StateFlow<Boolean> = _running
+        val running: StateFlow<Boolean> get() = ElevatorEvents.running
 
         fun start(context: Context) =
             ContextCompat.startForegroundService(context, Intent(context, ElevatorDetectionService::class.java))
@@ -54,6 +55,8 @@ class ElevatorDetectionService : Service(), SensorEventListener {
     private val detector = ElevatorDetector(DetectorConfig(), object : ElevatorDetector.Listener {
         override fun onPhaseChanged(phase: ElevatorDetector.Phase) {
             events._phase.value = phase
+            // RIDING이 아니게 되는 순간 방향 표시는 항상 해제
+            if (phase != ElevatorDetector.Phase.RIDING) events._direction.value = null
         }
 
         override fun onRideStarted(direction: ElevatorDetector.Direction, timestampNs: Long) {
@@ -62,13 +65,16 @@ class ElevatorDetectionService : Service(), SensorEventListener {
         }
 
         override fun onRideFinished(ride: ElevatorDetector.ElevatorRide) {
-            events._rides.tryEmit(ride)
+            events._direction.value = null
+            events._lastRide.value = ride
+            events._rideFinished.tryEmit(ride)
             updateNotification(
-                "하차: ${ride.direction} ${"%.1f".format(ride.altitudeChangeM)}m (~${ride.estimatedFloors}층)"
+                "하차: ${ride.direction} ${"%.1f".format(kotlin.math.abs(ride.altitudeChangeM))}m (~${ride.estimatedFloors}층)"
             )
         }
 
         override fun onRideCancelled(reason: String) {
+            events._direction.value = null
             updateNotification(DEFAULT_TEXT)
         }
     })
@@ -77,12 +83,7 @@ class ElevatorDetectionService : Service(), SensorEventListener {
         super.onCreate()
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
-        if (sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE) == null) {
-            // 기압계 없는 기기는 신뢰할 만한 감지가 불가능 → 서비스 종료 (가속도만으로는 오탐이 큼)
-            stopSelf()
-            return
-        }
-
+        // startForegroundService() 후 5초 내 startForeground 필수 → 무조건 먼저 호출
         createChannel()
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification(DEFAULT_TEXT),
@@ -90,14 +91,22 @@ class ElevatorDetectionService : Service(), SensorEventListener {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH else 0,
         )
 
+        if (sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE) == null) {
+            // 기압계 없는 기기는 신뢰할 만한 감지 불가 → 종료 (UI에서도 사전 차단)
+            stopSelf()
+            return
+        }
+
         sensorThread = HandlerThread("elevator-sensors").apply { start() }
         sensorHandler = Handler(sensorThread.looper)
         acquireWakeLock()
         registerSensors()
+        initialized = true
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        _running.value = true
+        if (!initialized) return START_NOT_STICKY
+        events._running.value = true
         return START_STICKY
     }
 
@@ -132,7 +141,7 @@ class ElevatorDetectionService : Service(), SensorEventListener {
 
     /**
      * 화면이 꺼지면 AP가 suspend 되어 non-wakeup 센서 이벤트가 전달되지 않는다.
-     * FGS만으로는 CPU가 깨어있지 않으므로 PARTIAL_WAKE_LOCK이 필요하다. (배터리 비용 있음 → README 참고)
+     * FGS만으로는 CPU가 깨어있지 않으므로 PARTIAL_WAKE_LOCK이 필요하다. (배터리 비용 있음)
      */
     @SuppressLint("WakelockTimeout")
     private fun acquireWakeLock() {
@@ -147,7 +156,8 @@ class ElevatorDetectionService : Service(), SensorEventListener {
         if (::sensorManager.isInitialized) sensorManager.unregisterListener(this)
         if (::sensorThread.isInitialized) sensorThread.quitSafely()
         wakeLock?.takeIf { it.isHeld }?.release()
-        _running.value = false
+        events._running.value = false
+        events.resetLiveState() // 종료 후 UI에 이전 방향/단계가 남지 않도록
         super.onDestroy()
     }
 

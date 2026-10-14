@@ -53,18 +53,19 @@ class ElevatorDetector(
     private var startPressure = 0f
     private var direction = Direction.UP
     private var calmSinceNs = -1L
+    private var walkSinceNs = -1L       // RIDING 중 걷기 시작 시점 (하차 감지용)
     private var peakSlope = 0f
     private var impulseConfirmed = false
 
     fun onAccelerometer(timestampNs: Long, x: Float, y: Float, z: Float) {
         motion.onAccel(timestampNs, x, y, z)
         vertical.onAccel(timestampNs, x, y, z)
-        evaluateMotionGate()
+        evaluateMotionGate(timestampNs)
     }
 
     fun onStep(timestampNs: Long) {
         motion.onStep(timestampNs)
-        evaluateMotionGate()
+        evaluateMotionGate(timestampNs)
     }
 
     fun onPressure(timestampNs: Long, hPa: Float) {
@@ -157,17 +158,27 @@ class ElevatorDetector(
     }
 
     /**
-     * 걸음 게이트. RIDING 중에는 몇 걸음(자리 이동) 정도는 허용하고, 기압 추세로만 종료를 판단한다.
-     * 하차 후 걷기 시작하면 기압 기울기가 0이 되므로 자연스럽게 종료된다.
+     * 걸음 게이트.
+     * - RIDING 중 몇 걸음(자리 이동)은 허용하지만, 걷기가 [DetectorConfig.walkEndNs] 이상 이어지면
+     *   하차한 것으로 보고 즉시 종료한다. (기압 안정 대기 없이 UI 상태가 바로 풀리도록)
      */
-    private fun evaluateMotionGate() {
+    private fun evaluateMotionGate(nowNs: Long) {
         val m = motion.state
         when (phase) {
             Phase.GATED_WALKING -> if (m == MotionClassifier.State.STATIONARY) setPhase(Phase.MONITORING)
             Phase.MONITORING, Phase.CANDIDATE -> if (m == MotionClassifier.State.WALKING) {
                 setPhase(Phase.GATED_WALKING) // 계단 이동 등은 여기서 걸러짐
             }
-            Phase.RIDING -> Unit
+            Phase.RIDING -> {
+                if (m == MotionClassifier.State.WALKING) {
+                    if (walkSinceNs < 0) walkSinceNs = nowNs
+                    if (nowNs - walkSinceNs >= config.walkEndNs && !pressure.filtered.isNaN()) {
+                        finishRide(walkSinceNs, pressure.filtered)
+                    }
+                } else {
+                    walkSinceNs = -1L
+                }
+            }
         }
     }
 
@@ -177,6 +188,7 @@ class ElevatorDetector(
     private fun setPhase(p: Phase) {
         if (phase == p) return
         phase = p
+        if (p == Phase.RIDING) walkSinceNs = -1L
         listener.onPhaseChanged(p)
     }
 
@@ -233,7 +245,6 @@ internal class MotionClassifier(private val c: DetectorConfig) {
 /**
  * 중력 벡터를 느린 LPF로 추정하고, 가속도를 중력 방향으로 투영해 수직 선형가속도를 구한다.
  * 양수 = 위쪽 가속. 폰 방향과 무관하게 동작.
- * (TYPE_GRAVITY/TYPE_LINEAR_ACCELERATION 퓨전 센서가 있으면 그걸 써도 된다.)
  */
 internal class VerticalAccel(private val c: DetectorConfig) {
     private var gx = 0f; private var gy = 0f; private var gz = 0f

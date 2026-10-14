@@ -20,6 +20,8 @@ data class DetectorConfig(
     val minSustainNs: Long = 1_500_000_000L,   // 트리거 후 기울기 유지 시간
     val minCandidateAltitudeM: Float = 1.2f,   // RIDING 확정에 필요한 누적 고도 변화
     val endHoldNs: Long = 1_500_000_000L,
+    /** RIDING 중 '걷기'가 이 시간 이상 지속되면 하차한 것으로 보고 즉시 종료 */
+    val walkEndNs: Long = 2_000_000_000L,
     val maxRideNs: Long = 180_000_000_000L,
     val minAltitudeChangeM: Float = 2.5f,
     val floorHeightM: Float = 3.0f,
