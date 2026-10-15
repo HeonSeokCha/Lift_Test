@@ -26,4 +26,7 @@ data class DetectorConfig(
     val minAltitudeChangeM: Float = 2.5f,
     val floorHeightM: Float = 3.0f,
     val metersPerHpa: Float = 8.3f,         // 해수면 근처 근사치
+
+    // 정차 후 재출발을 기다리는 시간
+    val stopMergeWindowNs: Long = 15_000_000_000L
 )

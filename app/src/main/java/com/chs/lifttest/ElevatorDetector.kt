@@ -20,6 +20,8 @@ class ElevatorDetector(
     enum class Phase { GATED_WALKING, MONITORING, CANDIDATE, RIDING }
     enum class Direction { UP, DOWN }
 
+    private var calmPressure = 0f
+
     data class ElevatorRide(
         val direction: Direction,
         val startNs: Long,
@@ -114,12 +116,22 @@ class ElevatorDetector(
             }
 
             Phase.RIDING -> {
-                peakSlope = maxOf(peakSlope, abs(slope))
-                if (abs(slope) < config.rideEndSlope) {
-                    if (calmSinceNs < 0) calmSinceNs = timestampNs
-                    if (timestampNs - calmSinceNs >= config.endHoldNs) finishRide(calmSinceNs, p)
+                val calm = abs(slope) < config.rideEndSlope
+                if (calm) {
+                    if (calmSinceNs < 0) { calmSinceNs = timestampNs; calmPressure = p }
+                    // 병합 대기 시간 동안 재출발이 없으면 정차 시점 기준으로 확정
+                    if (timestampNs - calmSinceNs >= config.stopMergeWindowNs) {
+                        finishRide(calmSinceNs, calmPressure)
+                    }
                 } else {
-                    calmSinceNs = -1L
+                    val sameDirection = (slope < 0) == (direction == Direction.UP)
+                    if (calmSinceNs >= 0 && !sameDirection) {
+                        // 반대 방향 재출발 → 이전 탑승은 정차 시점에 끝난 것으로 확정
+                        finishRide(calmSinceNs, calmPressure)
+                    } else {
+                        calmSinceNs = -1L // 같은 방향 재출발 → 같은 탑승으로 이어감
+                        peakSlope = maxOf(peakSlope, abs(slope))
+                    }
                 }
                 if (phase == Phase.RIDING && timestampNs - candidateStartNs > config.maxRideNs) {
                     listener.onRideCancelled("timeout")
@@ -170,11 +182,10 @@ class ElevatorDetector(
                 setPhase(Phase.GATED_WALKING) // 계단 이동 등은 여기서 걸러짐
             }
             Phase.RIDING -> {
-                if (m == MotionClassifier.State.WALKING) {
+                val stopped = calmSinceNs >= 0
+                if (m == MotionClassifier.State.WALKING && stopped) {
                     if (walkSinceNs < 0) walkSinceNs = nowNs
-                    if (nowNs - walkSinceNs >= config.walkEndNs && !pressure.filtered.isNaN()) {
-                        finishRide(walkSinceNs, pressure.filtered)
-                    }
+                    if (nowNs - walkSinceNs >= config.walkEndNs) finishRide(calmSinceNs, calmPressure)
                 } else {
                     walkSinceNs = -1L
                 }
