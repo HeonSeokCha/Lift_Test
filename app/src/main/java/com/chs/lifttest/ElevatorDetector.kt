@@ -1,14 +1,5 @@
 package com.chs.lifttest
 
-import android.content.Context
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
-import android.os.Handler
-import android.os.Looper
-import android.os.PowerManager
-import android.os.SystemClock
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.sqrt
@@ -19,8 +10,6 @@ class ElevatorDetector(
 ) {
     enum class Phase { GATED_WALKING, MONITORING, CANDIDATE, RIDING }
     enum class Direction { UP, DOWN }
-
-    private var calmPressure = 0f
 
     data class ElevatorRide(
         val direction: Direction,
@@ -54,8 +43,10 @@ class ElevatorDetector(
     private var candidateTriggerNs = 0L // 실제로 임계값을 넘은 시점
     private var startPressure = 0f
     private var direction = Direction.UP
-    private var calmSinceNs = -1L
-    private var walkSinceNs = -1L       // RIDING 중 걷기 시작 시점 (하차 감지용)
+    private var calmSinceNs = -1L       // RIDING 중 '정차'가 시작된 시점 (-1 = 이동 중)
+    private var calmPressure = 0f       // 정차 중 가장 최근 안정 기압 (종료 고도 계산용)
+    private var walkSinceNs = -1L       // 정차 중 걷기 시작 시점 (걸음 센서 없는 기기용 폴백)
+    private val stopSteps = ArrayDeque<Long>() // 정차 중 발생한 걸음 이벤트 (하차 판단용)
     private var peakSlope = 0f
     private var impulseConfirmed = false
 
@@ -67,6 +58,15 @@ class ElevatorDetector(
 
     fun onStep(timestampNs: Long) {
         motion.onStep(timestampNs)
+        // 정차 중 걸음이 짧은 시간에 충분히 쌓이면 하차. 1~3걸음(자리 이동)은 무시한다.
+        if (phase == Phase.RIDING && calmSinceNs >= 0) {
+            stopSteps.addLast(timestampNs)
+            while (timestampNs - stopSteps.first() > config.leaveStepWindowNs) stopSteps.removeFirst()
+            if (stopSteps.size >= config.leaveSteps) {
+                finishRide(calmSinceNs, calmPressure)
+                return
+            }
+        }
         evaluateMotionGate(timestampNs)
     }
 
@@ -116,25 +116,38 @@ class ElevatorDetector(
             }
 
             Phase.RIDING -> {
-                val calm = abs(slope) < config.rideEndSlope
-                if (calm) {
-                    if (calmSinceNs < 0) { calmSinceNs = timestampNs; calmPressure = p }
-                    // 병합 대기 시간 동안 재출발이 없으면 정차 시점 기준으로 확정
-                    if (timestampNs - calmSinceNs >= config.stopMergeWindowNs) {
-                        finishRide(calmSinceNs, calmPressure)
+                val absSlope = abs(slope)
+                if (calmSinceNs < 0) {
+                    // 이동 중
+                    if (absSlope < config.rideEndSlope) {
+                        calmSinceNs = timestampNs   // 정차 시작 (아직 확정 아님 → 병합 대기)
+                        calmPressure = p
+                        stopSteps.clear()
+                    } else {
+                        peakSlope = maxOf(peakSlope, absSlope)
                     }
                 } else {
-                    val sameDirection = (slope < 0) == (direction == Direction.UP)
-                    if (calmSinceNs >= 0 && !sameDirection) {
-                        // 반대 방향 재출발 → 이전 탑승은 정차 시점에 끝난 것으로 확정
-                        finishRide(calmSinceNs, calmPressure)
-                    } else {
-                        calmSinceNs = -1L // 같은 방향 재출발 → 같은 탑승으로 이어감
-                        peakSlope = maxOf(peakSlope, abs(slope))
+                    // 정차 중: 재출발이면 병합, 반대 방향이면 이전 탑승 확정, 아니면 대기
+                    if (absSlope < config.rideEndSlope) calmPressure = p
+                    if (absSlope >= config.rideStartSlope) {
+                        val sameDirection = (slope < 0) == (direction == Direction.UP)
+                        if (sameDirection) {
+                            calmSinceNs = -1L        // 중간 층 정차 후 재출발 → 같은 탑승으로 이어감
+                            walkSinceNs = -1L
+                            stopSteps.clear()
+                            peakSlope = maxOf(peakSlope, absSlope)
+                        } else {
+                            finishRide(calmSinceNs, calmPressure) // 반대 방향 출발 → 정차 시점에 하차
+                            return
+                        }
+                    } else if (timestampNs - calmSinceNs >= config.stopMergeWindowNs) {
+                        finishRide(calmSinceNs, calmPressure)     // 재출발 없음 → 하차 확정
+                        return
                     }
                 }
-                if (phase == Phase.RIDING && timestampNs - candidateStartNs > config.maxRideNs) {
+                if (timestampNs - candidateStartNs > config.maxRideNs) {
                     listener.onRideCancelled("timeout")
+                    resetRideTracking()
                     setPhase(nextIdlePhase())
                 }
             }
@@ -159,7 +172,14 @@ class ElevatorDetector(
         } else {
             listener.onRideCancelled("altitude change too small: ${"%.2f".format(dh)} m")
         }
+        resetRideTracking()
         setPhase(nextIdlePhase())
+    }
+
+    private fun resetRideTracking() {
+        calmSinceNs = -1L
+        walkSinceNs = -1L
+        stopSteps.clear()
     }
 
     private fun confidence(peakSpeed: Float): Float {
@@ -171,15 +191,18 @@ class ElevatorDetector(
 
     /**
      * 걸음 게이트.
-     * - RIDING 중 몇 걸음(자리 이동)은 허용하지만, 걷기가 [DetectorConfig.walkEndNs] 이상 이어지면
-     *   하차한 것으로 보고 즉시 종료한다. (기압 안정 대기 없이 UI 상태가 바로 풀리도록)
+     * - MONITORING/CANDIDATE: 걷기가 감지되면 계단 이동 등으로 보고 게이트로 복귀.
+     * - RIDING: 이동 중(기압 변화 중)에는 엘리베이터 안에서 걸어도 무시.
+     *   정차 중 하차 판단의 주 경로는 [onStep]의 걸음 수 기준이다.
+     *   여기서는 걸음 센서가 없는 기기를 위한 폴백으로, 정차 중 '걷기' 상태가
+     *   [DetectorConfig.walkEndNs] 이상 이어질 때만 하차로 확정한다.
      */
     private fun evaluateMotionGate(nowNs: Long) {
         val m = motion.state
         when (phase) {
             Phase.GATED_WALKING -> if (m == MotionClassifier.State.STATIONARY) setPhase(Phase.MONITORING)
             Phase.MONITORING, Phase.CANDIDATE -> if (m == MotionClassifier.State.WALKING) {
-                setPhase(Phase.GATED_WALKING) // 계단 이동 등은 여기서 걸러짐
+                setPhase(Phase.GATED_WALKING)
             }
             Phase.RIDING -> {
                 val stopped = calmSinceNs >= 0
@@ -199,7 +222,7 @@ class ElevatorDetector(
     private fun setPhase(p: Phase) {
         if (phase == p) return
         phase = p
-        if (p == Phase.RIDING) walkSinceNs = -1L
+        if (p == Phase.RIDING) { walkSinceNs = -1L; calmSinceNs = -1L; stopSteps.clear() }
         listener.onPhaseChanged(p)
     }
 
