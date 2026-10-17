@@ -19,6 +19,8 @@ data class DetectorConfig(
     val rideEndSlope: Float = 0.025f,       // hPa/s ≈ 0.2 m/s. 이 아래면 '정차'로 본다
     val minSustainNs: Long = 1_500_000_000L,   // 트리거 후 기울기 유지 시간
     val minCandidateAltitudeM: Float = 1.2f,   // RIDING 확정에 필요한 누적 고도 변화
+    /** 평균 기울기가 이 값 미만(≈0.8 m/s)이면서 출발 임펄스가 없으면 에스컬레이터로 간주해 기각 */
+    val escalatorMaxMeanSlope: Float = 0.10f,
     /** 정차 후 이 시간 안에 재출발(같은 방향)하면 같은 탑승으로 병합. 지나면 하차로 확정 */
     val stopMergeWindowNs: Long = 15_000_000_000L,
     /** 정차 중 걸음이 [leaveStepWindowNs] 안에 이 횟수 이상이면 하차로 보고 병합 대기 없이 즉시 확정 */
@@ -31,3 +33,4 @@ data class DetectorConfig(
     val floorHeightM: Float = 3.0f,
     val metersPerHpa: Float = 8.3f,         // 해수면 근처 근사치
 )
+

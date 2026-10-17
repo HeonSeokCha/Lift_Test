@@ -3,7 +3,6 @@ package com.chs.lifttest
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.sqrt
-
 class ElevatorDetector(
     private val config: DetectorConfig = DetectorConfig(),
     private val listener: Listener,
@@ -49,6 +48,9 @@ class ElevatorDetector(
     private val stopSteps = ArrayDeque<Long>() // 정차 중 발생한 걸음 이벤트 (하차 판단용)
     private var peakSlope = 0f
     private var impulseConfirmed = false
+    private var slopeSum = 0f           // CANDIDATE 구간 평균 기울기 계산용 (에스컬레이터 배제)
+    private var slopeCount = 0
+    private var rejectedUntilCalm = false // 에스컬레이터로 기각 후, 기압이 한 번 안정될 때까지 재트리거 금지
 
     fun onAccelerometer(timestampNs: Long, x: Float, y: Float, z: Float) {
         motion.onAccel(timestampNs, x, y, z)
@@ -78,13 +80,16 @@ class ElevatorDetector(
 
         when (phase) {
             Phase.GATED_WALKING -> Unit
-            Phase.MONITORING -> if (abs(slope) >= config.rideStartSlope) {
+            Phase.MONITORING -> if (rejectedUntilCalm) {
+                if (abs(slope) < config.rideEndSlope) rejectedUntilCalm = false
+            } else if (abs(slope) >= config.rideStartSlope) {
                 // 기울기 창의 시작점을 출발 시점으로 소급
                 candidateStartNs = pressure.windowStartNs
                 candidateTriggerNs = timestampNs
                 startPressure = pressure.windowStartPressure
                 direction = if (slope < 0) Direction.UP else Direction.DOWN // 기압↓ = 상승
                 peakSlope = abs(slope)
+                slopeSum = abs(slope); slopeCount = 1
                 calmSinceNs = -1L
                 impulseConfirmed = vertical.hadImpulse(
                     sinceNs = candidateStartNs - config.impulseLookbackNs,
@@ -101,6 +106,7 @@ class ElevatorDetector(
                     return
                 }
                 peakSlope = maxOf(peakSlope, abs(slope))
+                slopeSum += abs(slope); slopeCount++
                 if (!impulseConfirmed) {
                     impulseConfirmed = vertical.hadImpulse(
                         candidateStartNs - config.impulseLookbackNs, direction == Direction.UP,
@@ -110,6 +116,13 @@ class ElevatorDetector(
                 val sustained = timestampNs - candidateTriggerNs >= config.minSustainNs
                 val movedEnough = abs(altitudeDelta(startPressure, p)) >= config.minCandidateAltitudeM
                 if (sustained && movedEnough) {
+                    // 느리고(≈0.8 m/s 미만) 출발 임펄스도 없으면 에스컬레이터로 간주해 기각
+                    val meanSlope = slopeSum / slopeCount
+                    if (!impulseConfirmed && meanSlope < config.escalatorMaxMeanSlope) {
+                        rejectedUntilCalm = true // 같은 에스컬레이터에서 CANDIDATE가 반복되지 않도록
+                        setPhase(Phase.MONITORING)
+                        return
+                    }
                     setPhase(Phase.RIDING)
                     listener.onRideStarted(direction, candidateStartNs)
                 }
@@ -222,6 +235,7 @@ class ElevatorDetector(
     private fun setPhase(p: Phase) {
         if (phase == p) return
         phase = p
+        if (p == Phase.GATED_WALKING) rejectedUntilCalm = false // 걷기 시작 = 에스컬레이터 하차로 간주
         if (p == Phase.RIDING) { walkSinceNs = -1L; calmSinceNs = -1L; stopSteps.clear() }
         listener.onPhaseChanged(p)
     }
