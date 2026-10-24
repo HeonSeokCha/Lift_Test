@@ -11,12 +11,17 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+
 object PermissionUtil {
     private fun isGranted(context: Context, permission: String) =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
     fun hasActivityRecognition(context: Context) =
         isGranted(context, Manifest.permission.ACTIVITY_RECOGNITION)
+
+    /** Android 13 미만은 별도 권한이 없으므로 true */
+    fun hasNotificationPermission(context: Context) =
+        Build.VERSION.SDK_INT < 33 || isGranted(context, Manifest.permission.POST_NOTIFICATIONS)
 
     /** 기압계 유무. 없으면 감지 불가이므로 시작 전에 막는다. */
     fun hasBarometer(context: Context): Boolean {
@@ -31,9 +36,7 @@ object PermissionUtil {
 
     fun missingPermissions(context: Context): Array<String> = buildList {
         if (!hasActivityRecognition(context)) add(Manifest.permission.ACTIVITY_RECOGNITION)
-        if (Build.VERSION.SDK_INT >= 33 && !isGranted(context, Manifest.permission.POST_NOTIFICATIONS)) {
-            add(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        if (!hasNotificationPermission(context)) add(Manifest.permission.POST_NOTIFICATIONS)
     }.toTypedArray()
 
     fun openAppSettings(context: Context) {
