@@ -5,7 +5,9 @@ import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
+import android.app.TaskStackBuilder
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -53,7 +55,10 @@ class ElevatorDetectionService : Service(), SensorEventListener {
         val running: StateFlow<Boolean> get() = ElevatorEvents.running
 
         fun start(context: Context) =
-            ContextCompat.startForegroundService(context, Intent(context, ElevatorDetectionService::class.java))
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, ElevatorDetectionService::class.java)
+            )
 
         fun stop(context: Context) =
             context.stopService(Intent(context, ElevatorDetectionService::class.java))
@@ -200,16 +205,31 @@ class ElevatorDetectionService : Service(), SensorEventListener {
         )
     }
 
-    private fun buildNotification(text: String): Notification =
-        NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun buildNotification(text: String): Notification {
+        val intent = Intent(this, MainActivity::class.java)
+        val resultPendingIntent: PendingIntent? = TaskStackBuilder.create(this).run {
+            addNextIntentWithParentStack(intent)
+            getPendingIntent(
+                0,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentTitle("엘리베이터 감지")
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setContentIntent(resultPendingIntent)
             .build()
+    }
 
     private fun updateNotification(text: String) {
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID,
+            buildNotification(text)
+        )
     }
 }
